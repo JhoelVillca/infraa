@@ -1,344 +1,347 @@
+# Guía de Rol: PROXY + MONITOREO (Tu Rol)
 
+Esta guía ha sido corregida y aclarada: se han uniformado los pasos, corregido ejemplos de configuración (Netplan, Nginx, Prometheus y MariaDB), adaptado el SQL a MariaDB y mejoradas las instrucciones de verificación y hardening. Reemplaza todos los valores entre `<>` por los valores reales de tu entorno (por ejemplo `<VLAN_ID>`, `<IP_PROXY>`, `<IP_APP1>`, `<IP_APP2>`, `<IP_DB>`, `<IP_GATEWAY>`).
 
-## 👤 Guía de Rol: PROXY + MONITOREO (Tu Rol)
+## Información general
 
-**Tus IPs:**
+- IP de gestión/salto: `192.168.100.219`
+- IP de servicio (VLAN): `<IP_PROXY>` (ej. `192.168.101.2`)
+- Puertos relevantes:
+  - Nginx (HTTP): `80`
+  - Grafana: `3000`
+  - Prometheus: `9090`
+  - Node Exporter: `9100`
+  - App Node: `3000`
+  - MariaDB: `3306`
 
-  * **Gestión/Salto:** `192.168.100.219`
-  * **Servicio (VLAN):** `<IP_PROXY>` (ej. `192.168.101.2`)
+---
 
-### Fase 0: Reconocimiento e Instalación
+## Fase 0 — Acceso, reconocimiento e instalación
 
-1.  **Accede a tu VM:**
-      * `ssh` al "Jump Server" (ej. `adminsrv@jhoelvillca`).
-      * Desde ahí, salta a tu VM: `ssh tu-usuario@192.168.100.219`
-2.  **Haz reconocimiento:**
-      * [cite\_start]`ip a` (Confirma el nombre de tu interfaz, probablemente `ens18`). [cite: 25]
-      * `sudo ufw status` (Debería estar `inactive`).
-      * `ping -c 3 8.8.8.8` (Confirma Internet).
-3.  **Instala tu software:**
-    ```bash
-    sudo apt update
-    sudo apt install nginx prometheus prometheus-node-exporter grafana -y
-    sudo systemctl enable --now grafana-server prometheus-node-exporter
-    ```
+1. Accede a tu VM:
+   - Conéctate al Jump Server: `ssh adminsrv@jhoelvillca`
+   - Desde allí salta a tu VM: `ssh tu-usuario@192.168.100.219`
 
-### Fase 1: Configuración de Red (Netplan)
+2. Reconocimiento básico:
+   - `ip a`                 ← identifica la interfaz (probablemente `ens18`)
+   - `sudo ufw status`      ← confirma estado del firewall
+   - `ping -c 3 8.8.8.8`    ← confirma conectividad a Internet
 
-1.  Haz un backup y edita el archivo Netplan:
-    ```bash
-    sudo cp /etc/netplan/50-cloud-init.yaml /etc/netplan/50-cloud-init.yaml.bak
-    sudo nano /etc/netplan/50-cloud-init.yaml
-    ```
-2.  **AÑADE** la sección `vlans:` al archivo. Usa tu `<VLAN_ID>` y tu `<IP_PROXY>`.
-    ```yaml
-    # /etc/netplan/50-cloud-init.yaml
-    network:
-      version: 2
-      renderer: networkd
-      ethernets:
-        ens18: # <-- ESTO YA EXISTE
-          addresses:
-          - "192.168.100.219/24"
-          routes:
-          - to: "default"
-            via: "192.168.100.1"
-          nameservers:
-            addresses: [8.8.8.8]
-      
-      # --- ¡AÑADE ESTA PARTE! ---
-      vlans:
-        vlan<VLAN_ID>: # ej. vlan101
-          id: <VLAN_ID> # ej. 101
-          link: ens18 # ¡La interfaz que encontraste en `ip a`!
-          addresses:
-            - "<IP_PROXY>/29" # ej. "192.168.101.2/29"
-          nameservers:
-            addresses: [8.8.8.8] # ¡La clave del DNS!
-          routes:
-            - to: default
-              via: "<IP_GATEWAY>" # ej. "192.168.101.1"
-    ```
-3.  Aplica y prueba:
-    ```bash
-    sudo netplan apply
-    ping -c 3 <IP_GATEWAY> # Ping a tu Gateway de VLAN
-    ```
+3. Instalación de software (ejemplo Ubuntu/Debian):
+```bash
+sudo apt update
+sudo apt install -y nginx prometheus prometheus-node-exporter grafana
+sudo systemctl enable --now grafana-server prometheus-node-exporter
+```
+Nota: los nombres de paquete pueden variar según la distro. Ajusta si es necesario.
 
-### Fase 2: Configuración de Servicios
+---
 
-1.  **Nginx (Balanceador):**
+## Fase 1 — Configuración de red (Netplan)
 
-    ```bash
-    sudo nano /etc/nginx/sites-available/default
-    ```
+1. Haz copia de seguridad y abre el archivo:
+```bash
+sudo cp /etc/netplan/50-cloud-init.yaml /etc/netplan/50-cloud-init.yaml.bak
+sudo nano /etc/netplan/50-cloud-init.yaml
+```
 
-    *Pega esto (reemplaza `<IP_APP1>` e `<IP_APP2>`):*
+2. Ejemplo de configuración netplan con VLAN. Reemplaza los placeholders:
+```yaml
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ens18:
+      addresses:
+        - "192.168.100.219/24"
+      routes:
+        - to: "default"
+          via: "192.168.100.1"
+      nameservers:
+        addresses: [8.8.8.8]
 
-    ```nginx
-    upstream loadbalancer {
-        server <IP_APP1>:3000; # ej. 192.168.101.3:3000
-        server <IP_APP2>:3000; # ej. 192.168.101.4:3000
+  vlans:
+    vlan<VLAN_ID>:            # e.g. vlan101
+      id: <VLAN_ID>          # e.g. 101
+      link: ens18
+      addresses:
+        - "<IP_PROXY>/29"    # e.g. "192.168.101.2/29"
+      nameservers:
+        addresses: [8.8.8.8]
+      routes:
+        - to: default
+          via: "<IP_GATEWAY>" # e.g. "192.168.101.1"
+```
+- Asegúrate de mantener la indentación YAML correcta.
+- Sustituye `<VLAN_ID>`, `<IP_PROXY>` y `<IP_GATEWAY>`.
+
+3. Aplica y prueba:
+```bash
+sudo netplan apply
+ping -c 3 <IP_GATEWAY>
+ip a    # verifica que la interfaz vlan exista (p.ej. vlan101)
+```
+
+---
+
+## Fase 2 — Configuración de servicios
+
+### 1) Nginx (balanceador)
+
+Edita el sitio por defecto:
+```bash
+sudo nano /etc/nginx/sites-available/default
+```
+
+Ejemplo de configuración (reemplaza IPs de apps):
+```nginx
+upstream loadbalancer {
+    server <IP_APP1>:3000;
+    server <IP_APP2>:3000;
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    location / {
+        proxy_pass http://loadbalancer;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
-    server {
-        listen 80;
-        server_name _;
-        location / {
-            proxy_pass http://loadbalancer;
-        }
-    }
-    ```
+}
+```
 
-    ```bash
-    sudo nginx -t && sudo systemctl reload nginx
-    ```
+Prueba y recarga:
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
 
-2.  **Prometheus (Colector):**
+### 2) Prometheus (colector)
 
-    ```bash
-    sudo nano /etc/prometheus/prometheus.yml
-    ```
+Edita `/etc/prometheus/prometheus.yml` y añade (o integra) un job para `node_exporter`:
+```yaml
+global:
+  scrape_interval: 15s
 
-    *Añade esto al final, bajo `scrape_configs:` (usa las IPs de *todo* tu grupo):*
+scrape_configs:
+  - job_name: "node_exporter"
+    static_configs:
+      - targets:
+        - "<IP_PROXY>:9100"
+        - "<IP_APP1>:9100"
+        - "<IP_APP2>:9100"
+        - "<IP_DB>:9100"
+```
+- Reemplaza los placeholders por las IPs reales.
+- Si Prometheus corre en otra máquina, ajusta la URL desde Grafana.
 
-    ```yaml
-      - job_name: "node_exporter" # ¡El job_name correcto!
-        static_configs:
-          - targets:
-              - "<IP_PROXY>:9100" # Tú
-              - "<IP_APP1>:9100"  # App1
-              - "<IP_APP2>:9100"  # App2
-              - "<IP_DB>:9100"    # DB
-    ```
+Reinicia Prometheus:
+```bash
+sudo systemctl restart prometheus.service
+```
 
-    ```bash
-    sudo systemctl restart prometheus.service
-    ```
+### 3) Grafana
 
-### Fase 3: Hardening (UFW)
+- Grafana normalmente escucha en `:3000`.
+- Accede en `http://<IP_PROXY>:3000` (o usando el nombre DNS que provea el lab).
+- Usuario/Password por defecto: `admin`/`admin` (se te pedirá cambiar al primer login).
+- Añade Data Source:
+  - Tipo: Prometheus
+  - URL: `http://<IP_PROXY>:9090`
+- Importa el dashboard ID `10242` (o el que indique la práctica), y selecciona el Data Source.
 
-1.  Configura tu firewall:
-    ```bash
-    sudo ufw allow ssh
-    sudo ufw allow 80/tcp    # Nginx
-    sudo ufw allow 3000/tcp  # Grafana
-    sudo ufw allow 9090/tcp  # Prometheus Server
-    sudo ufw allow 9100/tcp  # Node Exporter
-    sudo ufw enable
-    ```
+---
 
-### Fase 4: Verificación
+## Fase 3 — Hardening (UFW)
 
-1.  Abre las URLs públicas (ej. `https://vlan<VLAN_ID>-app.rootcode.com.bo`). Recarga y ve si balancea (¡dará error 502 hasta que las Apps estén listas\!).
-2.  Abre Grafana (ej. `https://vlan<VLAN_ID>-monitoring.rootcode.com.bo`).
-3.  Login (`admin`/`admin`), añade Data Source (Prometheus) -\> URL: `http://<IP_PROXY>:9090`.
-4.  Importa Dashboard `10242`, selecciona tu Data Source, y elige `job="node_exporter"`.
-5.  ¡Observa el dashboard `Targets` de Prometheus (`http://<IP_PROXY>:9090/targets` - necesitarás crear una regla DNAT y de VBox para esto si lo quieres en tu navegador) y mira cómo tus compañeros pasan de `DOWN` a `UP`\!
+Reglas recomendadas:
+```bash
+sudo ufw allow ssh
+sudo ufw allow 80/tcp     # Nginx
+sudo ufw allow 3000/tcp   # Grafana
+sudo ufw allow 9090/tcp   # Prometheus (si debe ser accesible)
+sudo ufw allow 9100/tcp   # Node Exporter (si debe ser accesible)
+sudo ufw enable
+```
+Considera limitar acceso a `9090`/`3000`/`9100` solo desde subredes de gestión o desde IPs de alumnos/Proxy según la política del laboratorio.
 
------
+---
 
-## 🖥️ Guía de Rol: APLICACIÓN 1 (Alumno 2)
+## Fase 4 — Verificación
 
-**Tus IPs:**
+1. Verifica balanceo en Nginx accediendo a `http://<IP_PROXY>/` (puede mostrar 502 hasta que las apps estén levantadas).
+2. Verifica Prometheus:
+   - Targets: `http://<IP_PROXY>:9090/targets`
+3. Verifica Grafana y que el dashboard muestre métricas.
+4. Comprueba que `node_exporter` esté activo en cada host:
+```bash
+sudo systemctl status prometheus-node-exporter
+curl http://localhost:9100/metrics | head
+```
 
-  * **Gestión/Salto:** `192.168.100.213`
-  * **Servicio (VLAN):** `<IP_APP1>` (ej. `192.168.101.3`)
+---
 
-### Fase 0: Reconocimiento e Instalación
+# Guía de Rol: APLICACIÓN 1 (Alumno 2)
 
-1.  Accede a tu VM: `ssh` (Jump) -\> `ssh tu-usuario@192.168.100.213`
-2.  Reconoce: `ip a` (busca `ens18`), `sudo ufw status`.
-3.  Instala tu software:
-    ```bash
-    sudo apt update
-    sudo apt install prometheus-node-exporter -y
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-    \. "$HOME/.nvm/nvm.sh"
-    nvm install 22
-    npm install pm2@latest -g
-    sudo systemctl enable --now prometheus-node-exporter
-    ```
+- IP de gestión: `192.168.100.213`
+- IP de servicio (VLAN): `<IP_APP1>` (ej. `192.168.101.3`)
 
-### Fase 1: Configuración de Red (Netplan)
+Fases: siguen los mismos pasos que el Proxy en cuanto a Netplan y UFW, con particularidades:
 
-1.  Haz backup: `sudo cp /etc/netplan/50-cloud-init.yaml /etc/netplan/50-cloud-init.yaml.bak`
-2.  Edita: `sudo nano /etc/netplan/50-cloud-init.yaml`
-3.  **AÑADE** tu sección de VLAN (¡usa tu IP `<IP_APP1>`\!):
-    ```yaml
-    # ... (Sección 'ethernets:' de gestión) ...
-      vlans:
-        vlan<VLAN_ID>: # ej. vlan101
-          id: <VLAN_ID> # ej. 101
-          link: ens18
-          addresses:
-            - "<IP_APP1>/29" # ej. "192.168.101.3/29"
-          nameservers:
-            addresses: [8.8.8.8]
-          routes:
-            - to: default
-              via: "<IP_GATEWAY>" # ej. "192.168.101.1"
-    ```
-4.  Aplica y prueba: `sudo netplan apply` y `ping <IP_GATEWAY>`.
+Fase 0 — Instalar software:
+```bash
+sudo apt update
+sudo apt install -y prometheus-node-exporter
+# Node.js env
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+. "$HOME/.nvm/nvm.sh"
+nvm install 22
+npm install -g pm2
+sudo systemctl enable --now prometheus-node-exporter
+```
 
-### Fase 2: Configuración de Servicios
+Fase 1 — Netplan: añade la sección vlan con `<IP_APP1>` (ver ejemplo anterior).
 
-1.  Clona y configura la App:
-    ```bash
-    git clone https://github.com/marceloquispeortega/api-restful-crud-movies app
-    cd app
-    npm install
-    cp .env.example .env
-    nano .env
-    ```
-2.  **Edita `.env`** (¡usa la IP de tu compañero de DB\!):
-    ```ini
-    PORT=3000
-    DB_HOST='<IP_DB>' # ej. 192.168.101.5
-    ... (el resto igual) ...
-    ```
-3.  ¡Lanza la App\!
-    ```bash
-    pm2 start app.js --name app1
-    ```
+Fase 2 — Clonar y configurar la app:
+```bash
+git clone https://github.com/marceloquispeortega/api-restful-crud-movies app
+cd app
+npm install
+cp .env.example .env
+nano .env   # ajustar DB_HOST, etc.
+```
+En `.env`:
+```
+PORT=3000
+DB_HOST='<IP_DB>'
+```
+Levanta la app con PM2:
+```bash
+pm2 start app.js --name app1
+```
 
-### Fase 3: Hardening (UFW)
+Fase 3 — UFW:
+```bash
+sudo ufw allow ssh
+sudo ufw allow 3000/tcp
+sudo ufw allow 9100/tcp
+sudo ufw enable
+```
 
-1.  Configura tu firewall:
-    ```bash
-    sudo ufw allow ssh
-    sudo ufw allow 3000/tcp  # Node.js App
-    sudo ufw allow 9100/tcp  # Node Exporter
-    sudo ufw enable
-    ```
+Fase 4 — Avisar al Proxy que estás online (o registrar en Prometheus target).
 
-### Fase 4: Verificación
+---
 
-1.  ¡Avisa al Proxy que estás en línea\!
+# Guía de Rol: APLICACIÓN 2 (Alumno 3)
 
------
+Sigue los pasos de Aplicación 1 reemplazando las IPs por `<IP_APP2>` y arrancando con:
+```bash
+pm2 start app.js --name app2
+```
 
-## 🖥️ Guía de Rol: APLICACIÓN 2 (Alumno 3)
+---
 
-**Tus IPs:**
+# Guía de Rol: BASE DE DATOS (Alumno 4)
 
-  * **Gestión/Salto:** (La IP que te den, ej. `192.168.100.x`)
-  * **Servicio (VLAN):** `<IP_APP2>` (ej. `192.168.101.4`)
+- IP de gestión: `192.168.100.206`
+- IP de servicio (VLAN): `<IP_DB>` (ej. `192.168.101.5`)
 
-**(Sigue los pasos EXACTOS de APLICACIÓN 1, pero reemplaza lo siguiente):**
+Fase 0 — Instalación:
+```bash
+sudo apt update
+sudo apt install -y mariadb-server prometheus-node-exporter
+sudo systemctl enable --now prometheus-node-exporter
+```
 
-  * **Fase 0 (Acceso):** Usa tu propia IP de gestión para el "salto".
-  * **Fase 1 (Netplan):** Usa tu IP `<IP_APP2>` (ej. `192.168.101.4/29`).
-  * **Fase 2 (PM2):** Lanza con un nombre diferente: `pm2 start app.js --name app2`
+Fase 1 — Netplan: añade la sección vlan con `<IP_DB>` (ver ejemplo).
 
------
+Fase 2 — Asegurar MariaDB y configurar acceso remoto:
 
-## 🗄️ Guía de Rol: BASE DE DATOS (Alumno 4)
+1. Ejecuta el script de seguridad:
+```bash
+sudo mysql_secure_installation
+```
+Sigue las opciones interactivas para establecer contraseña root y endurecer la instalación.
 
-**Tus IPs:**
+2. Configura `bind-address` en MariaDB para escuchar en la IP de la VLAN:
+```bash
+sudo nano /etc/mysql/mariadb.conf.d/50-server.cnf
+```
+Cambia:
+```
+bind-address = 127.0.0.1
+```
+por:
+```
+bind-address = <IP_DB>
+```
+Reinicia:
+```bash
+sudo systemctl restart mariadb
+```
 
-  * **Gestión/Salto:** `192.168.100.206`
-  * **Servicio (VLAN):** `<IP_DB>` (ej. `192.168.101.5`)
+3. Crear base de datos y usuarios (ajustado a MariaDB/MySQL):
+```bash
+sudo mysql -u root -p
+```
+En el prompt de MariaDB:
+```sql
+CREATE DATABASE db_movies;
+CREATE USER 'usr_movies'@'<IP_APP1>' IDENTIFIED BY 'secret';
+CREATE USER 'usr_movies'@'<IP_APP2>' IDENTIFIED BY 'secret';
+GRANT ALL PRIVILEGES ON db_movies.* TO 'usr_movies'@'<IP_APP1>';
+GRANT ALL PRIVILEGES ON db_movies.* TO 'usr_movies'@'<IP_APP2>';
+FLUSH PRIVILEGES;
 
-### Fase 0: Reconocimiento e Instalación
+USE db_movies;
+CREATE TABLE movies (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(150) NOT NULL,
+    year INT,
+    UNIQUE KEY unique_title (title)
+);
 
-1.  Accede a tu VM: `ssh` (Jump) -\> `ssh tu-usuario@192.168.100.206`
-2.  Reconoce: `ip a` (busca `ens18`), `sudo ufw status`.
-3.  Instala tu software:
-    ```bash
-    sudo apt update
-    sudo apt install mariadb-server prometheus-node-exporter -y
-    sudo systemctl enable --now prometheus-node-exporter
-    ```
+INSERT INTO movies (title, year) VALUES
+    ('Inception', 2010),('The Matrix', 1999),('Pulp Fiction', 1994),
+    ('The Dark Knight', 2008),('Eternal Sunshine of the Spotless Mind', 2004),
+    ('Forrest Gump', 1994),('Fight Club', 1999),('The Godfather', 1972),
+    ('Interstellar', 2014),('Parasite', 2019);
+EXIT;
+```
 
-### Fase 1: Configuración de Red (Netplan)
+Fase 3 — UFW (permitir sólo las apps a MariaDB):
+```bash
+sudo ufw allow ssh
+sudo ufw allow 9100/tcp
+sudo ufw allow from <IP_APP1> to any port 3306
+sudo ufw allow from <IP_APP2> to any port 3306
+sudo ufw enable
+```
 
-1.  Haz backup: `sudo cp /etc/netplan/50-cloud-init.yaml /etc/netplan/50-cloud-init.yaml.bak`
-2.  Edita: `sudo nano /etc/netplan/50-cloud-init.yaml`
-3.  **AÑADE** tu sección de VLAN (¡usa tu IP `<IP_DB>`\!):
-    ```yaml
-    # ... (Sección 'ethernets:' de gestión) ...
-      vlans:
-        vlan<VLAN_ID>: # ej. vlan101
-          id: <VLAN_ID> # ej. 101
-          link: ens18
-          addresses:
-            - "<IP_DB>/29" # ej. "192.168.101.5/29"
-          nameservers:
-            addresses: [8.8.8.8]
-          routes:
-            - to: default
-              via: "<IP_GATEWAY>" # ej. "192.168.101.1"
-    ```
-4.  Aplica y prueba: `sudo netplan apply` y `ping <IP_GATEWAY>`.
+Fase 4 — Verificación
+- Prueba conexión desde App1/App2:
+```bash
+mysql -h <IP_DB> -u usr_movies -p
+```
+- Avisa al Proxy/monitoring que estás listo.
 
-### Fase 2: Configuración de Servicios
+---
 
-1.  **Asegurar MariaDB:**
+## Notas finales y recomendaciones
 
-    ```bash
-    sudo mysql_secure_installation
-    ```
+- Sustituye todos los placeholders `<...>` por valores reales antes de aplicar cambios.
+- Mantén backups de archivos críticos (netplan, nginx, prometheus.yml, configuraciones de MariaDB).
+- Si la práctica quiere que los servicios sean accesibles desde tu máquina local (host), puede que necesites configurar NAT/DNAT en VirtualBox/VM host; coordina con el instructor.
+- Revisa logs si algo falla:
+  - `sudo journalctl -u nginx -b`
+  - `sudo journalctl -u prometheus -b`
+  - `sudo journalctl -u grafana-server -b`
+  - `sudo journalctl -u mariadb -b`
 
-    (Presiona Enter, 'Y', pon contraseña, y 'Y' a todo).
-
-2.  **Configurar Acceso Remoto:**
-
-    ```bash
-    sudo nano /etc/mysql/mariadb.conf.d/50-server.cnf
-    ```
-
-      * Cambia `bind-address = 127.0.0.1` por `bind-address = <IP_DB>` (ej. `192.168.101.5`).
-
-    <!-- end list -->
-
-    ```bash
-    sudo systemctl restart mariadb
-    ```
-
-3.  **Crear BD y Usuarios:**
-
-    ```bash
-    sudo mysql -u root -p
-    ```
-
-    *Pega esto (reemplaza `<IP_APP1>` e `<IP_APP2>`):*
-
-    ```sql
-    CREATE DATABASE db_movies;
-    CREATE USER 'usr_movies'@'<IP_APP1>' IDENTIFIED BY 'secret';
-    CREATE USER 'usr_movies'@'<IP_APP2>' IDENTIFIED BY 'secret';
-    GRANT ALL PRIVILEGES ON db_movies.* TO 'usr_movies'@'<IP_APP1>';
-    GRANT ALL PRIVILEGES ON db_movies.* TO 'usr_movies'@'<IP_APP2>';
-    FLUSH PRIVILEGES;
-    USE db_movies;
-    CREATE TABLE movies (
-        id serial PRIMARY KEY,
-        title character varying(150) NOT NULL,
-        year integer,
-        UNIQUE(title)
-    );
-    INSERT INTO movies (title, year) VALUES
-        ('Inception', 2010),('The Matrix', 1999),('Pulp Fiction', 1994),
-        ('The Dark Knight', 2008),('Eternal Sunshine of the Spotless Mind', 2004),
-        ('Forrest Gump', 1994),('Fight Club', 1999),('The Godfather', 1972),
-        ('Interstellar', 2014),('Parasite', 2019);
-    quit;
-    ```
-
-### Fase 3: Hardening (UFW)
-
-1.  Configura tu firewall (¡la parte más crítica\!):
-    ```bash
-    sudo ufw allow ssh
-    sudo ufw allow 9100/tcp # Node Exporter
-
-    # ¡PERMITIR SOLO A LAS APPS! (Reemplaza IPs)
-    sudo ufw allow from <IP_APP1> to any port 3306
-    sudo ufw allow from <IP_APP2> to any port 3306
-
-    sudo ufw enable
-    ```
-
-### Fase 4: Verificación
-
-1.  ¡Avisa al Proxy que estás en línea\!
+¡Listo! La guía ha sido limpiada, corregida y estandarizada. Puedes pedirme que:
+- Aplique un ejemplo con valores reales concretos para tu entorno,
+- Genere archivos de configuración listos para copiar/pegar (netplan, nginx, prometheus.yml),
+- O prepare instrucciones para crear una regla NAT/DNAT en VirtualBox para acceder a Prometheus/Grafana desde tu navegador local.
